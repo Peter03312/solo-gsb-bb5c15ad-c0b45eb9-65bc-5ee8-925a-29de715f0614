@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>联排提示板</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- 登录页 -->
+  <section id="login-view" class="login-wrap" hidden>
+    <form id="login-form" class="login-card">
+      <h1>🎭 联排提示板</h1>
+      <p class="sub">剧场 Web 联排提示板 · 请登录</p>
+      <label>用户名 <input name="username" autocomplete="username" required /></label>
+      <label>密码 <input name="password" type="password" autocomplete="current-password" required /></label>
+      <div id="login-error" class="error-text" hidden></div>
+      <button type="submit" class="primary">登录</button>
+      <div class="hint">
+        默认账号：舞监 <code>sm / sm12345</code>；灯光 <code>light / light123</code>；
+        音响 <code>sound / sound123</code>；道具 <code>props / props123</code>
+      </div>
+    </form>
+  </section>
+
+  <!-- 主界面 -->
+  <section id="app-view" hidden>
+    <header class="topbar">
+      <div class="brand">🎭 联排提示板</div>
+      <nav id="tabs" class="tabs"></nav>
+      <div class="userbox">
+        <span id="user-tag"></span>
+        <button id="logout-btn" class="ghost">退出</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <div id="alert-bar" class="alert" hidden></div>
+
+      <!-- 舞监：草稿编辑 -->
+      <div id="tab-draft" class="tabpane" hidden>
+        <div class="pane-head">
+          <h2>提示项草稿 <small id="draft-ver"></small></h2>
+          <button id="draft-reload" class="ghost">刷新草稿</button>
+        </div>
+
+        <div id="validation-panel" class="panel"></div>
+
+        <div class="grid2">
+          <div class="panel">
+            <h3 id="cue-form-title">新增提示项</h3>
+            <form id="cue-form" class="cue-form">
+              <input type="hidden" name="id" />
+              <input type="hidden" name="rowVersion" />
+              <div class="form-row">
+                <label>编号 <input name="code" required placeholder="如 L1" /></label>
+                <label>岗位
+                  <select name="position" id="cue-position-select" required></select>
+                </label>
+              </div>
+              <label>说明 <input name="title" placeholder="提示项内容" /></label>
+              <div class="form-row">
+                <label>计划开始 <input name="plannedStartText" type="time" required /></label>
+                <label>时长(分钟) <input name="duration" type="number" min="1" step="1" required /></label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary" id="cue-submit">新增</button>
+                <button type="button" id="cue-cancel" class="ghost" hidden>取消编辑</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <h3>前置关系</h3>
+            <form id="dep-form" class="dep-form">
+              <select name="from" id="dep-from" required></select>
+              <span>完成后 →</span>
+              <select name="to" id="dep-to" required></select>
+              <button type="submit" class="primary">添加</button>
+            </form>
+            <div id="dep-list" class="dep-list"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>提示项列表</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>编号</th><th>说明</th><th>岗位</th><th>计划开始</th><th>时长</th><th>计划结束</th><th>前置</th><th>操作</th></tr>
+              </thead>
+              <tbody id="draft-cue-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel publish-panel">
+          <h3>发布只读联排版本</h3>
+          <p class="muted">
+            仅当「前置项计划结束不晚于后项开始、同岗位时段不重叠、依赖无环」全部满足时才能发布。
+            发布后岗位在现场页依据版本登记，草稿仍可继续编辑。
+          </p>
+          <div class="publish-row">
+            <input id="publish-note" placeholder="版本说明（可选），如：10 月 5 日联排" />
+            <button id="publish-btn" class="danger">发布联排版本</button>
+          </div>
+          <div id="publish-result"></div>
+        </div>
+      </div>
+
+      <!-- 现场联排 -->
+      <div id="tab-live" class="tabpane" hidden>
+        <div class="pane-head">
+          <h2>现场联排（当前版本）</h2>
+          <button id="live-reload" class="ghost">刷新</button>
+        </div>
+        <div id="live-meta" class="panel"></div>
+        <div id="live-conflicts"></div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>编号</th><th>说明</th><th>岗位</th><th>计划</th>
+                  <th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>岗位登记</th>
+                </tr>
+              </thead>
+              <tbody id="live-tbody"></tbody>
+            </table>
+          </div>
+          <p class="muted">
+            重算规则：未开始项按前置项的实际/预计结束顺延，且不早于原计划；已开始项保留实际开始时间。
+            顺延导致的岗位冲突以红条提示。
+          </p>
+        </div>
+      </div>
+
+      <!-- 已发布版本回看 -->
+      <div id="tab-versions" class="tabpane" hidden>
+        <div class="pane-head">
+          <h2>已发布版本</h2>
+          <button id="versions-reload" class="ghost">刷新</button>
+        </div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>版本号</th><th>说明</th><th>发布时间</th><th>提示项</th><th>已有登记</th><th>操作</th></tr></thead>
+              <tbody id="versions-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="version-detail"></div>
+      </div>
+    </main>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
