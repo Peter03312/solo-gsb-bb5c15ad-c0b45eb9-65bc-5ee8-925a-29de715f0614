@@ -87,3 +87,19 @@ tr:hover td { background: #fafbfd; }
 .own-row td { background: #f3f8ff; }
 .mono { font-variant-numeric: tabular-nums; }
 .latest-tag { background: #2f6fed; color: #fff; border-radius: 8px; padding: 1px 8px; font-size: 11px; margin-left: 6px; }
+
+/* 舞监更正 */
+.corr-actions { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.corr-clear-line { flex-direction: row !important; align-items: center; gap: 6px !important; font-size: 13px !important; color: #334 !important; }
+.corr-reason { white-space: normal; min-width: 180px; }
+.corr-history table th, .corr-history table td { white-space: normal; }
+.cascaded-row td { background: #f6f7f9; }
+.cascaded-row:hover td { background: #f0f2f5; }
+
+/* 弹窗 */
+.modal-overlay { position: fixed; inset: 0; background: rgba(20, 28, 44, .5); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
+.modal-card { background: #fff; border-radius: 12px; width: min(760px, 100%); max-height: 86vh; overflow-y: auto; box-shadow: 0 22px 60px rgba(0,0,0,.3); padding: 18px 22px; }
+.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.modal-head h3 { margin: 0; font-size: 16px; }
+#corr-form textarea { padding: 8px 10px; border: 1px solid #cbd2dc; border-radius: 8px; font-size: 13px; font-family: inherit; resize: vertical; }
+#corr-form .error-text { margin: 0; }

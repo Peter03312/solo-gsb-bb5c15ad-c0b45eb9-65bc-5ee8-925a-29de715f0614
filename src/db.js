@@ -91,8 +91,24 @@ CREATE TABLE IF NOT EXISTS registrations (
   UNIQUE(version_id, cue_ref)
 );
 
+-- 舞监现场登记更正历史（一次更正可能产生级联两条）
+CREATE TABLE IF NOT EXISTS registration_corrections (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id     INTEGER NOT NULL REFERENCES rehearsal_versions(id) ON DELETE CASCADE,
+  cue_ref        INTEGER NOT NULL,
+  field          TEXT NOT NULL CHECK (field IN ('actual_start', 'actual_end', 'estimated_end')),
+  old_value      INTEGER,                   -- 更正前（分钟），NULL 表示原本未登记
+  new_value      INTEGER,                   -- 更正后（分钟），NULL 表示清除
+  reason         TEXT NOT NULL,
+  cascaded       INTEGER NOT NULL DEFAULT 0,-- 1：清除开始时级联清除完成
+  group_id       INTEGER,                   -- 同一次更正：级联行指向主行 id；主行为 NULL（排序用 COALESCE）
+  corrected_by   TEXT NOT NULL,
+  corrected_at   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_pcues_version ON published_cues(version_id);
 CREATE INDEX IF NOT EXISTS idx_reg_version ON registrations(version_id);
+CREATE INDEX IF NOT EXISTS idx_corr_version ON registration_corrections(version_id);
 `);
 
 function getMeta(key, fallback = null) {

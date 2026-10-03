@@ -374,8 +374,11 @@ function renderLive() {
   renderConflicts(v.conflicts);
 
   const isOp = state.me.role === 'operator';
+  const isSM = state.me.role === 'sm';
   const myPos = state.me.position;
   const canReg = isOp && v.isLatest;
+  $('#live-col-reg').textContent = isSM ? '登记更正' : '岗位登记';
+  $('#sm-correct-hint').hidden = !isSM;
 
   $('#live-tbody').innerHTML = v.cues.map((c) => {
     const mine = isOp && c.position === myPos;
@@ -385,6 +388,8 @@ function renderLive() {
       reg = renderRegControls(c);
     } else if (mine && isOp) {
       reg = '<span class="muted">本岗位（版本已归档）</span>';
+    } else if (isSM) {
+      reg = renderCorrectionCell(c, v, 'live');
     }
     return `<tr class="${mine ? 'own-row' : ''}" data-cue="${c.id}">
       <td><strong>${esc(c.code)}</strong></td>
@@ -466,6 +471,191 @@ $('#live-tbody').addEventListener('click', async (ev) => {
 $('#live-reload').addEventListener('click', () =>
   loadLive().then(() => alertBar('ok', '已刷新')).catch((e) => alertBar('error', errorToHtml(e))));
 
+// ---------- 舞监：现场登记更正 ----------
+
+const CORR_FIELDS = [
+  { key: 'actual_start', label: '实际开始', timeKey: 'actualStartText' },
+  { key: 'actual_end', label: '实际完成', timeKey: 'actualEndText' },
+  { key: 'estimated_end', label: '预计结束', timeKey: 'estimatedEndText' },
+];
+const CORR_FIELD_LABEL = Object.fromEntries(CORR_FIELDS.map((f) => [f.key, f.label]));
+
+function timeOrDash(t) { return t ?? '<span class="muted">空</span>'; }
+
+function renderCorrectionCell(c, v, scope) {
+  const corrBtn = v.isLatest && scope === 'live'
+    ? `<button class="danger tiny" data-act="open-correct" data-scope="${scope}" data-cue="${c.id}">更正</button>`
+    : scope === 'live' ? '<span class="muted">归档不可更正</span>' : '';
+  const histBtn = c.corrections?.length
+    ? `<button class="ghost tiny" data-act="open-history" data-scope="${scope}" data-cue="${c.id}">更正记录(${c.corrections.length})</button>`
+    : '';
+  return `<div class="corr-actions">${corrBtn}${histBtn}</div>`;
+}
+
+function openModal(title, html) {
+  $('#modal-title').textContent = title;
+  $('#modal-body').innerHTML = html;
+  $('#modal-overlay').hidden = false;
+}
+
+function closeModal() {
+  $('#modal-overlay').hidden = true;
+  $('#modal-body').innerHTML = '';
+}
+
+$('#modal-close').addEventListener('click', closeModal);
+$('#modal-overlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'modal-overlay') closeModal();
+});
+
+function findCueInContext(scope, cueId) {
+  const v = scope === 'live' ? state.live : state.detail;
+  const cue = v?.cues.find((x) => x.id === cueId);
+  return { v, cue };
+}
+
+function renderHistoryHtml(cue, v) {
+  const rows = cue.corrections || [];
+  return `
+    <div class="muted">
+      第 ${v.versionNo} 版 · <strong>${esc(cue.code)}</strong> ${esc(cue.title)}（${esc(cue.position)}）
+      ${v.isLatest ? '' : '· 归档版本（只读）'}
+    </div>
+    <div class="table-wrap corr-history">
+      <table>
+        <thead><tr><th>更正项</th><th>更正前</th><th>更正后</th><th>操作者</th><th>时间</th><th>原因</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr${r.cascaded ? ' class="cascaded-row"' : ''}>
+          <td>${esc(CORR_FIELD_LABEL[r.field] || r.field)}${r.cascaded ? '<div class="muted">级联清除</div>' : ''}</td>
+          <td class="mono">${timeOrDash(r.oldValueText)}</td>
+          <td class="mono">${timeOrDash(r.newValueText)}</td>
+          <td>${esc(r.correctedBy)}</td>
+          <td class="mono">${esc(r.correctedAt)}</td>
+          <td class="corr-reason">${esc(r.reason)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <div class="muted">更正只改变现场登记，不改变已发布计划；清除实际开始时系统会同时清除实际完成。</div>`;
+}
+
+$('#live-tbody').addEventListener('click', (ev) => {
+  const corrBtn = ev.target.closest('button[data-act="open-correct"], button[data-act="open-history"]');
+  if (!corrBtn) return;
+  const cueId = Number(corrBtn.dataset.cue);
+  const { v, cue } = findCueInContext('live', cueId);
+  if (!cue) return;
+  if (corrBtn.dataset.act === 'open-history') {
+    openModal(`更正记录：${cue.code}`, renderHistoryHtml(cue, v));
+  } else {
+    openCorrectForm(cue, v);
+  }
+});
+
+function openCorrectForm(cue, v) {
+  const options = CORR_FIELDS.map((f) =>
+    `<option value="${f.key}">${f.label}（当前 ${cue[f.timeKey] ?? '空'}）</option>`).join('');
+  openModal(`现场登记更正：${cue.code}`, `
+    <form id="corr-form" class="cue-form" data-cue-id="${cue.id}">
+      <div class="muted">
+        第 ${v.versionNo} 版 · <strong>${esc(cue.code)}</strong> ${esc(cue.title)}（${esc(cue.position)}），
+        行版本 v${cue.rowVer}。仅可更正/清除其中一项；已发布计划不受影响。
+      </div>
+      <label>更正项
+        <select name="field" id="corr-field">${options}</select>
+      </label>
+      <label>更正后时间
+        <input type="time" name="time" id="corr-time" />
+      </label>
+      <label class="corr-clear-line"><input type="checkbox" name="clear" id="corr-clear" /> 清除该项（留空）</label>
+      <label>更正原因（必填）
+        <textarea name="reason" id="corr-reason" rows="2" maxlength="200" required placeholder="如：岗位口误报错、舞监现场核定"></textarea>
+      </label>
+      <div id="corr-err" class="error-text" hidden></div>
+      <div class="form-actions">
+        <button type="submit" class="danger">保存更正</button>
+        <button type="button" class="ghost" id="corr-cancel">取消</button>
+      </div>
+      <div class="muted" id="corr-rule-hint"></div>
+    </form>`);
+
+  const fieldSel = $('#corr-field');
+  const timeInput = $('#corr-time');
+  const clearBox = $('#corr-clear');
+  const hint = $('#corr-rule-hint');
+  const FILL_DEFAULTS = { actual_start: cue.actualStartText, actual_end: cue.actualEndText, estimated_end: cue.estimatedEndText };
+  const RULE_HINTS = {
+    actual_start: '更正完成须不早于开始；清除实际开始将同时清除实际完成；保留的预计结束不得早于实际开始（无实际开始则为原计划开始）。',
+    actual_end: '实际完成必须有实际开始且不得早于实际开始。',
+    estimated_end: '预计结束不得早于实际开始（若无实际开始则为原计划开始）。',
+  };
+  function syncField() {
+    const f = fieldSel.value;
+    hint.textContent = RULE_HINTS[f];
+    clearBox.checked = false;
+    timeInput.disabled = false;
+    timeInput.value = FILL_DEFAULTS[f] || '';
+  }
+  fieldSel.addEventListener('change', syncField);
+  clearBox.addEventListener('change', () => { timeInput.disabled = clearBox.checked; });
+  $('#corr-cancel').addEventListener('click', closeModal);
+  syncField();
+}
+
+$('#modal-overlay').addEventListener('submit', async (ev) => {
+  const form = ev.target.closest('#corr-form');
+  if (!form) return;
+  ev.preventDefault();
+  const errBox = $('#corr-err');
+  errBox.hidden = true;
+  const v = state.live;
+  const cueId = Number(form.dataset.cueId);
+  const cue = v?.cues.find((x) => x.id === cueId);
+  if (!cue) { closeModal(); return; }
+  const field = $('#corr-field').value;
+  const clear = $('#corr-clear').checked;
+  const reason = $('#corr-reason').value.trim();
+  if (!reason) {
+    errBox.textContent = '请填写更正原因';
+    errBox.hidden = false;
+    return;
+  }
+  if (!clear && !$('#corr-time').value) {
+    errBox.textContent = '请填写更正后的时间，或勾选“清除该项”';
+    errBox.hidden = false;
+    return;
+  }
+  const meta = CORR_FIELDS.find((f) => f.key === field);
+  const payload = {
+    versionId: v.id,
+    cueRef: cueId,
+    rowVersion: cue.rowVer,
+    field,
+    clear,
+    reason,
+  };
+  payload[meta.timeKey] = clear ? null : $('#corr-time').value;
+  try {
+    const data = await api('POST', '/api/registrations/corrections', payload);
+    state.live = data.version;
+    closeModal();
+    const conflictN = data.version.conflicts.length;
+    alertBar(conflictN ? 'error' : 'ok',
+      (data.cascaded ? '更正成功（清除开始已同时清除完成）。' : '更正成功，后续未开始项已按现有规则重算。')
+      + (conflictN ? ` 当前存在 ${conflictN} 项顺延岗位冲突，请查看红色提示。` : ''),
+      conflictN ? 10000 : 5000);
+    renderLive();
+  } catch (e) {
+    if (e.status === 409) {
+      // 与岗位登记共用行版本：过期时拒绝并提示刷新，不能覆盖新登记
+      alertBar('error', errorToHtml(e));
+      loadLive().then(renderLive).catch(() => {});
+      closeModal();
+    } else {
+      errBox.textContent = e.message;
+      errBox.hidden = false;
+    }
+  }
+});
+
 // ---------- 已发布版本回看 ----------
 
 async function loadVersions() {
@@ -496,6 +686,16 @@ $('#versions-tbody').addEventListener('click', async (ev) => {
   } catch (e) { alertBar('error', errorToHtml(e)); }
 });
 
+// 回看页（含归档版本）只展示更正历史，不提供更正入口
+$('#version-detail').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-act="open-history"]');
+  if (!btn) return;
+  const cueId = Number(btn.dataset.cue);
+  const v = state.detail;
+  const cue = v?.cues.find((x) => x.id === cueId);
+  if (cue) openModal(`更正记录：${cue.code}`, renderHistoryHtml(cue, v));
+});
+
 function renderDetail() {
   const v = state.detail;
   if (!v) return;
@@ -509,7 +709,7 @@ function renderDetail() {
     </div>
     ${conflictHtml}
     <div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>编号</th><th>说明</th><th>岗位</th><th>计划</th><th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>登记人/时间</th></tr></thead>
+      <thead><tr><th>编号</th><th>说明</th><th>岗位</th><th>计划</th><th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>登记人/时间</th>${state.me?.role === 'sm' ? '<th>更正</th>' : ''}</tr></thead>
       <tbody>${v.cues.map((c) => `<tr>
         <td><strong>${esc(c.code)}</strong></td>
         <td>${esc(c.title)}</td>
@@ -522,6 +722,7 @@ function renderDetail() {
         <td class="mono">${c.actualEndText ?? '—'}</td>
         <td class="mono">${c.estimatedEndText ?? '—'}</td>
         <td class="muted">${c.updatedBy ? esc(c.updatedBy) + '<br>' + esc(c.updatedAt || '') : '—'}</td>
+        <td>${state.me?.role === 'sm' ? renderCorrectionCell(c, v, 'detail') : ''}</td>
       </tr>`).join('')}</tbody>
     </table></div></div>`;
 }
