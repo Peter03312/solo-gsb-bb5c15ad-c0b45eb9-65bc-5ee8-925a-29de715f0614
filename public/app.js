@@ -364,16 +364,21 @@ function renderLive() {
   const v = state.live;
   if (!v) {
     $('#live-meta').innerHTML = '<div class="muted">尚未发布任何联排版本，请等待舞监发布。</div>';
+    $('#live-sm-hint').hidden = true;
     $('#live-conflicts').innerHTML = '';
     $('#live-tbody').innerHTML = '';
+    $('#live-corrections-panel').hidden = true;
+    $('#live-corrections').innerHTML = '';
     return;
   }
   $('#live-meta').innerHTML =
     `<strong>第 ${v.versionNo} 版</strong>　${esc(v.note)}　<span class="muted">发布于 ${esc(v.createdAt)}</span>
      ${v.isLatest ? '<span class="latest-tag">当前执行版本</span>' : '<span class="latest-tag" style="background:#999">非最新版本</span>'}`;
+  $('#live-sm-hint').hidden = state.me.role !== 'sm';
   renderConflicts(v.conflicts);
 
   const isOp = state.me.role === 'operator';
+  const isSM = state.me.role === 'sm';
   const myPos = state.me.position;
   const canReg = isOp && v.isLatest;
 
@@ -385,6 +390,8 @@ function renderLive() {
       reg = renderRegControls(c);
     } else if (mine && isOp) {
       reg = '<span class="muted">本岗位（版本已归档）</span>';
+    } else if (isSM && v.isLatest) {
+      reg = `<button class="danger tiny" data-corr="open" data-cue="${c.id}" data-ver="${c.rowVer}">更正</button>`;
     }
     return `<tr class="${mine ? 'own-row' : ''}" data-cue="${c.id}">
       <td><strong>${esc(c.code)}</strong></td>
@@ -400,7 +407,149 @@ function renderLive() {
       <td>${reg}</td>
     </tr>`;
   }).join('');
+
+  renderCorrections(v);
 }
+
+// ---------- 舞监：登记更正 ----------
+
+function valOrDash(t) {
+  return t === null || t === undefined ? '<span class="muted">（空）</span>' : `<span class="mono">${esc(t)}</span>`;
+}
+
+function renderCorrections(v) {
+  const panel = $('#live-corrections-panel');
+  const box = $('#live-corrections');
+  const list = v.corrections || [];
+  if (!list.length) {
+    panel.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  panel.hidden = false;
+  box.innerHTML = list.map((g) => `
+    <div class="corr-item">
+      <div class="corr-head">
+        <strong>「${esc(g.cueCode)}」</strong>
+        <span class="muted">${esc(g.correctedBy)} · ${esc(g.correctedAt)}</span>
+      </div>
+      <div class="corr-changes">
+        ${g.changes.map((ch) => `<div class="corr-change">
+          <span class="corr-field">${esc(ch.fieldLabel)}</span>
+          ${valOrDash(ch.oldText)} <span class="corr-arrow">→</span> ${valOrDash(ch.newText)}
+        </div>`).join('')}
+      </div>
+      <div class="corr-reason-text">原因：${esc(g.reason)}</div>
+    </div>`).join('');
+}
+
+const corrModal = { cue: null };
+
+function openCorrection(c) {
+  corrModal.cue = c;
+  $('#corr-cue').textContent = `${c.code} ${c.title}（${c.position}，当前行版本 v${c.rowVer}）`;
+  const fieldDefs = [
+    { key: 'actualStart', label: '实际开始', current: c.actualStartText },
+    { key: 'actualEnd', label: '实际完成', current: c.actualEndText },
+    { key: 'estimatedEnd', label: '预计结束', current: c.estimatedEndText },
+  ];
+  $('#corr-fields').innerHTML = fieldDefs.map((f) => `
+    <div class="corr-field-row" data-field="${f.key}">
+      <span class="corr-field-name">${f.label}</span>
+      <label><input type="radio" name="corr-op-${f.key}" value="keep" checked /> 保持</label>
+      <label><input type="radio" name="corr-op-${f.key}" value="set" /> 更正为
+        <input type="time" data-role="corr-time" value="${f.current ?? ''}" />
+      </label>
+      <label><input type="radio" name="corr-op-${f.key}" value="clear" /> 清除</label>
+      <span class="muted">当前：${valOrDash(f.current)}</span>
+    </div>`).join('');
+  $('#corr-reason-input').value = '';
+  $('#corr-error').hidden = true;
+  $('#correction-mask').hidden = false;
+}
+
+function closeCorrection() {
+  $('#correction-mask').hidden = true;
+  corrModal.cue = null;
+}
+
+$('#live-tbody').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-corr="open"]');
+  if (!btn) return;
+  const c = state.live?.cues.find((x) => x.id === Number(btn.dataset.cue));
+  if (!c) return;
+  if (Number(btn.dataset.ver) !== c.rowVer) {
+    alertBar('error', '该行登记已刷新，请使用最新版本号更正。');
+    loadLive().catch(() => {});
+    return;
+  }
+  openCorrection(c);
+});
+
+$('#corr-cancel').addEventListener('click', closeCorrection);
+$('#correction-mask').addEventListener('click', (ev) => {
+  if (ev.target === ev.currentTarget) closeCorrection();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !$('#correction-mask').hidden) closeCorrection();
+});
+
+$('#corr-submit').addEventListener('click', async () => {
+  const c = corrModal.cue;
+  if (!c) return;
+  const changes = [];
+  $$('#corr-fields .corr-field-row').forEach((row) => {
+    const field = row.dataset.field;
+    const op = row.querySelector(`input[name="corr-op-${field}"]:checked`).value;
+    if (op === 'keep') return;
+    if (op === 'clear') { changes.push({ field, op: 'clear' }); return; }
+    const timeVal = row.querySelector('[data-role="corr-time"]').value;
+    changes.push({ field, op: 'set', value: timeVal || '' });
+  });
+  const reason = $('#corr-reason-input').value.trim();
+  const errBox = $('#corr-error');
+  if (changes.length === 0) {
+    errBox.textContent = '请至少选择一项「更正为」或「清除」（全部为保持时无需保存）';
+    errBox.hidden = false;
+    return;
+  }
+  // 清除实际开始时自动同时清除实际完成（服务端会再次校验）
+  const clearStart = changes.some((x) => x.field === 'actualStart' && x.op === 'clear');
+  if (clearStart && !changes.some((x) => x.field === 'actualEnd')) {
+    changes.push({ field: 'actualEnd', op: 'clear' });
+  }
+  if (!reason) {
+    errBox.textContent = '请填写更正原因';
+    errBox.hidden = false;
+    return;
+  }
+  try {
+    const data = await api('POST', '/api/corrections', {
+      versionId: state.live.id,
+      cueRef: c.id,
+      rowVersion: c.rowVer,
+      reason,
+      changes,
+    });
+    state.live = data.version;
+    closeCorrection();
+    const hasConflict = data.version.conflicts.length > 0;
+    alertBar(hasConflict ? 'error' : 'ok',
+      hasConflict
+        ? `更正已保存，但出现 ${data.version.conflicts.length} 项顺延岗位冲突，请查看红色提示。`
+        : '更正已保存，后续未开始项与岗位冲突已按规则重算。');
+    renderLive();
+  } catch (e) {
+    if (e.status === 409) {
+      closeCorrection();
+      alertBar('error', errorToHtml(e));
+      loadLive().catch(() => {});
+    } else {
+      errBox.textContent = e.message;
+      errBox.hidden = false;
+    }
+  }
+});
 
 function renderRegControls(c) {
   const common = `data-cue="${c.id}" data-ver="${c.rowVer}" data-version-id="${state.live.id}"`;
@@ -496,6 +645,28 @@ $('#versions-tbody').addEventListener('click', async (ev) => {
   } catch (e) { alertBar('error', errorToHtml(e)); }
 });
 
+function renderDetailCorrections(v) {
+  const list = v.corrections || [];
+  if (!list.length) return '';
+  return `<div class="panel">
+    <h3>登记更正记录（${list.length} 次）</h3>
+    ${list.map((g) => `
+      <div class="corr-item">
+        <div class="corr-head">
+          <strong>「${esc(g.cueCode)}」</strong>
+          <span class="muted">${esc(g.correctedBy)} · ${esc(g.correctedAt)}</span>
+        </div>
+        <div class="corr-changes">
+          ${g.changes.map((ch) => `<div class="corr-change">
+            <span class="corr-field">${esc(ch.fieldLabel)}</span>
+            ${valOrDash(ch.oldText)} <span class="corr-arrow">→</span> ${valOrDash(ch.newText)}
+          </div>`).join('')}
+        </div>
+        <div class="corr-reason-text">原因：${esc(g.reason)}</div>
+      </div>`).join('')}
+  </div>`;
+}
+
 function renderDetail() {
   const v = state.detail;
   if (!v) return;
@@ -504,10 +675,11 @@ function renderDetail() {
         v.conflicts.map((c) => `<li>${esc(c.message)}</li>`).join('')}</ul></div>` : '';
   $('#version-detail').innerHTML = `
     <div class="panel">
-      <h3>回看：第 ${v.versionNo} 版（只读）${v.isLatest ? '<span class="latest-tag">当前执行版本</span>' : ''}</h3>
+      <h3>回看：第 ${v.versionNo} 版（只读）${v.isLatest ? '<span class="latest-tag">当前执行版本</span>' : '<span class="latest-tag" style="background:#999">归档版本</span>'}</h3>
       <div class="muted">${esc(v.note)} · 发布于 ${esc(v.createdAt)}</div>
     </div>
     ${conflictHtml}
+    ${renderDetailCorrections(v)}
     <div class="panel"><div class="table-wrap"><table>
       <thead><tr><th>编号</th><th>说明</th><th>岗位</th><th>计划</th><th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>登记人/时间</th></tr></thead>
       <tbody>${v.cues.map((c) => `<tr>

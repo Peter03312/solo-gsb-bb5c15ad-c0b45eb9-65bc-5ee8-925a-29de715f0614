@@ -142,6 +142,8 @@ function versionPayload(versionRow) {
     });
   }
 
+  const corrections = loadCorrections(versionRow.id);
+
   const live = computeLive(cues, deps, regMap);
   const latestId = (db.prepare('SELECT MAX(version_no) AS m FROM rehearsal_versions').get().m);
   return {
@@ -161,7 +163,47 @@ function versionPayload(versionRow) {
     })),
     conflicts: live.conflicts,
     orderProblem: live.orderProblem,
+    corrections,
   };
+}
+
+// ---------- 舞监：现场登记更正历史 ----------
+
+const CORRECTION_FIELDS = {
+  actualStart: { column: 'actual_start', label: '实际开始' },
+  actualEnd: { column: 'actual_end', label: '实际完成' },
+  estimatedEnd: { column: 'estimated_end', label: '预计结束' },
+};
+
+function loadCorrections(versionId) {
+  const rows = db.prepare(
+    `SELECT cue_ref, cue_code, field, old_value, new_value, reason,
+            corrected_by, corrected_at, batch_id
+     FROM registration_corrections WHERE version_id = ? ORDER BY batch_id DESC, id DESC`
+  ).all(versionId);
+  const groups = new Map();
+  for (const r of rows) {
+    if (!groups.has(r.batch_id)) {
+      groups.set(r.batch_id, {
+        batchId: r.batch_id,
+        cueRef: r.cue_ref,
+        cueCode: r.cue_code,
+        reason: r.reason,
+        correctedBy: r.corrected_by,
+        correctedAt: r.corrected_at,
+        changes: [],
+      });
+    }
+    groups.get(r.batch_id).changes.push({
+      field: r.field,
+      fieldLabel: CORRECTION_FIELDS[r.field].label,
+      oldValue: r.old_value,
+      newValue: r.new_value,
+      oldText: minToTime(r.old_value),
+      newText: minToTime(r.new_value),
+    });
+  }
+  return [...groups.values()];
 }
 
 // ---------- 认证 ----------
@@ -427,6 +469,135 @@ app.post('/api/registrations', requireAuth, (req, res, next) => {
     ).run({ ...patch, updated_by: actor, updated_at: stamp, id: reg.id });
 
     res.json({ version: versionPayload(ver) });
+  } catch (e) { next(e); }
+});
+
+// ---------- 舞监：更正现场登记（仅当前执行版本） ----------
+
+app.post('/api/corrections', requireSM, (req, res, next) => {
+  try {
+    const versionId = Number(req.body.versionId);
+    const cueRef = Number(req.body.cueRef);
+    const rowVersion = Number(req.body.rowVersion);
+    const reason = String(req.body.reason || '').trim();
+    const changesRaw = req.body.changes;
+    if (!Number.isInteger(versionId) || !Number.isInteger(cueRef) || !Number.isInteger(rowVersion)) {
+      throw new ApiError(400, 'BAD_INPUT', '版本、提示项与登记行版本号不能为空');
+    }
+    if (!reason) throw new ApiError(400, 'BAD_INPUT', '请填写更正原因');
+    if (!Array.isArray(changesRaw) || changesRaw.length === 0) {
+      throw new ApiError(400, 'BAD_INPUT', '请至少选择一项更正（实际开始/实际完成/预计结束）');
+    }
+
+    const parseOptTime = (v) => (v === undefined || v === null || v === '' ? null : timeToMin(v));
+    const changes = [];
+    const seen = new Set();
+    for (const ch of changesRaw) {
+      const field = String(ch && ch.field || '');
+      const meta = CORRECTION_FIELDS[field];
+      if (!meta) throw new ApiError(400, 'BAD_INPUT', `未知更正项「${field}」`);
+      if (seen.has(field)) throw new ApiError(400, 'BAD_INPUT', `「${meta.label}」重复提交`);
+      seen.add(field);
+      const op = String(ch.op || '');
+      if (op !== 'set' && op !== 'clear') {
+        throw new ApiError(400, 'BAD_INPUT', `「${meta.label}」操作类型无效`);
+      }
+      let value = null;
+      if (op === 'set') {
+        value = parseOptTime(ch.value);
+        if (value === null) throw new ApiError(400, 'BAD_INPUT', `「${meta.label}」时间格式应为 HH:MM`);
+      }
+      changes.push({ field, label: meta.label, op, value });
+    }
+
+    const actor = req.session.user.displayName;
+    const stamp = new Date().toLocaleString('sv-SE'); // YYYY-MM-DD HH:MM:SS
+
+    const result = db.transaction(() => {
+      const ver = db.prepare('SELECT * FROM rehearsal_versions WHERE id = ?').get(versionId);
+      if (!ver) throw new ApiError(404, 'NOT_FOUND', '联排版本不存在');
+      const latest = db.prepare('SELECT id FROM rehearsal_versions ORDER BY version_no DESC LIMIT 1').get();
+      if (!latest || latest.id !== ver.id) {
+        throw new ApiError(409, 'VERSION_ARCHIVED',
+          `第 ${ver.version_no} 版已归档（已有新版本发布），归档版本禁止更正，请刷新后在当前执行版本操作`);
+      }
+
+      const pc = db.prepare('SELECT * FROM published_cues WHERE version_id=? AND cue_ref=?')
+        .get(versionId, cueRef);
+      if (!pc) throw new ApiError(404, 'NOT_FOUND', '提示项不存在于该版本');
+
+      const reg = db.prepare('SELECT * FROM registrations WHERE version_id=? AND cue_ref=?')
+        .get(versionId, cueRef);
+      if (!reg) throw new ApiError(404, 'NOT_FOUND', '登记记录不存在');
+      // 与岗位登记共用同一行版本号：过期则拒绝，不能覆盖新登记
+      if (rowVersion !== reg.row_ver) {
+        throw new ApiError(409, 'VERSION_CONFLICT',
+          `「${pc.code}」登记已被更新：当前行版本 ${reg.row_ver}，提交基于 ${rowVersion}，请刷新后重试`,
+          { currentRowVersion: reg.row_ver });
+      }
+
+      const next = {
+        actualStart: reg.actual_start,
+        actualEnd: reg.actual_end,
+        estimatedEnd: reg.estimated_end,
+      };
+      const oldVals = {};
+      const effective = [];
+      for (const c of changes) {
+        oldVals[c.field] = next[c.field];
+        next[c.field] = c.op === 'clear' ? null : c.value;
+        if (oldVals[c.field] !== next[c.field]) effective.push(c);
+      }
+      if (effective.length === 0) {
+        throw new ApiError(400, 'BAD_INPUT', '所选更正项与当前登记值相同，无需更正');
+      }
+
+      // 状态一致性校验（针对更正后的完整状态）
+      if (next.actualEnd !== null && next.actualStart === null) {
+        throw new ApiError(400, 'BAD_STATE',
+          `「${pc.code}」更正后的实际完成必须有实际开始；清除实际开始时须同时清除实际完成`);
+      }
+      if (next.actualEnd !== null && next.actualEnd < next.actualStart) {
+        throw new ApiError(400, 'BAD_INPUT',
+          `「${pc.code}」更正后的实际完成 ${minToTime(next.actualEnd)} 早于实际开始 ${minToTime(next.actualStart)}`);
+      }
+      if (next.estimatedEnd !== null) {
+        const lower = next.actualStart !== null ? next.actualStart : pc.planned_start;
+        if (next.estimatedEnd < lower) {
+          throw new ApiError(400, 'BAD_INPUT',
+            `「${pc.code}」保留的预计结束 ${minToTime(next.estimatedEnd)} 早于`
+            + `${next.actualStart !== null ? '实际开始' : '原计划开始'} ${minToTime(lower)}`);
+        }
+      }
+
+      db.prepare(
+        `UPDATE registrations SET actual_start=@actualStart, actual_end=@actualEnd,
+           estimated_end=@estimatedEnd, row_ver=row_ver+1
+         WHERE id=@id AND row_ver=@rowVer`
+      ).run({
+        actualStart: next.actualStart, actualEnd: next.actualEnd,
+        estimatedEnd: next.estimatedEnd, id: reg.id, rowVer: reg.row_ver,
+      });
+
+      const batchId = db.prepare('SELECT COALESCE(MAX(batch_id), 0) + 1 AS m FROM registration_corrections').get().m;
+      const insHist = db.prepare(
+        `INSERT INTO registration_corrections
+           (version_id, cue_ref, cue_code, field, old_value, new_value, reason, corrected_by, corrected_at, batch_id)
+         VALUES (@versionId, @cueRef, @cueCode, @field, @oldValue, @newValue, @reason, @correctedBy, @correctedAt, @batchId)`
+      );
+      // 仅记录真正发生变化的字段
+      for (const c of effective) {
+        insHist.run({
+          versionId, cueRef, cueCode: pc.code, field: c.field,
+          oldValue: oldVals[c.field], newValue: next[c.field],
+          reason, correctedBy: actor, correctedAt: stamp, batchId,
+        });
+      }
+      return ver;
+    })();
+
+    // 更正只改变现场登记，不触碰已发布计划；随后按现有规则重算后续未开始项及岗位冲突
+    res.json({ version: versionPayload(result) });
   } catch (e) { next(e); }
 });
 

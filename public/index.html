@@ -122,7 +122,7 @@
               <thead>
                 <tr>
                   <th>编号</th><th>说明</th><th>岗位</th><th>计划</th>
-                  <th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>岗位登记</th>
+                  <th>重算开始</th><th>重算结束</th><th>状态</th><th>实际开始</th><th>实际完成</th><th>预计结束</th><th>登记/更正</th>
                 </tr>
               </thead>
               <tbody id="live-tbody"></tbody>
@@ -131,7 +131,12 @@
           <p class="muted">
             重算规则：未开始项按前置项的实际/预计结束顺延，且不早于原计划；已开始项保留实际开始时间。
             顺延导致的岗位冲突以红条提示。
+            <span id="live-sm-hint" hidden>舞监可对当前执行版本任意提示项点击「更正」修改或清除实际开始/实际完成/预计结束并填写原因；更正只改现场登记、不改已发布计划，归档版本禁止更正。</span>
           </p>
+        </div>
+        <div class="panel" id="live-corrections-panel" hidden>
+          <h3>登记更正记录</h3>
+          <div id="live-corrections"></div>
         </div>
       </div>
 
@@ -153,6 +158,26 @@
       </div>
     </main>
   </section>
+
+  <!-- 舞监：登记更正弹窗 -->
+  <div id="correction-mask" class="modal-mask" hidden>
+    <div class="modal">
+      <h3>更正现场登记 <small id="corr-cue" class="muted"></small></h3>
+      <p class="muted" id="corr-hint">
+        可一次更正或清除实际开始、实际完成、预计结束中的任意项；更正只改变现场登记，不改变已发布计划。
+        清除实际开始将自动同时清除实际完成。
+      </p>
+      <div id="corr-fields" class="corr-fields"></div>
+      <label class="corr-reason">更正原因（必填）
+        <textarea id="corr-reason-input" rows="3" placeholder="如：岗位误点完成，实际未完成"></textarea>
+      </label>
+      <div id="corr-error" class="error-text" hidden></div>
+      <div class="form-actions">
+        <button type="button" class="primary" id="corr-submit">保存更正</button>
+        <button type="button" class="ghost" id="corr-cancel">取消</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

@@ -87,3 +87,34 @@ tr:hover td { background: #fafbfd; }
 .own-row td { background: #f3f8ff; }
 .mono { font-variant-numeric: tabular-nums; }
 .latest-tag { background: #2f6fed; color: #fff; border-radius: 8px; padding: 1px 8px; font-size: 11px; margin-left: 6px; }
+
+/* 更正弹窗 */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(20, 28, 42, .45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal {
+  background: #fff; border-radius: 12px; padding: 22px 24px; width: 620px; max-width: 92vw;
+  max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.3);
+}
+.modal h3 { margin: 0 0 8px; font-size: 16px; }
+.modal h3 small { font-weight: 400; margin-left: 8px; }
+.corr-fields { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.corr-field-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid #e3e8f0; border-radius: 8px; padding: 8px 12px; font-size: 13px;
+}
+.corr-field-name { font-weight: 700; min-width: 72px; }
+.corr-field-row label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: #334; }
+.corr-field-row input[type="time"] { width: 100px; padding: 5px 8px; }
+.corr-reason { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #445; }
+.corr-reason textarea { padding: 8px 10px; border: 1px solid #cbd2dc; border-radius: 8px; font-size: 13px; resize: vertical; font-family: inherit; }
+.modal .form-actions { margin-top: 14px; }
+
+/* 更正历史 */
+.corr-item { border: 1px solid #e3e8f0; border-left: 3px solid #b3541e; border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; }
+.corr-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; font-size: 13px; }
+.corr-changes { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.corr-change .corr-field { display: inline-block; min-width: 72px; color: #556; }
+.corr-arrow { color: #b3541e; font-weight: 700; }
+.corr-reason-text { margin-top: 6px; font-size: 13px; color: #1f2933; }
